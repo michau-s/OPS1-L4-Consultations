@@ -13,6 +13,7 @@ typedef struct field_t
     int noSacks;
     int noSalted;
     pthread_mutex_t mxNoSacks;
+    pthread_cond_t condNoSacks;
 
 } field_t;
 
@@ -25,6 +26,16 @@ typedef struct argsPorter_t
     pthread_mutex_t* mxDoWork;
 
 } argsPorter_t;
+
+typedef struct argsLaborer_t
+{
+    field_t* field;
+    int ID;
+    int* doWork;
+    pthread_mutex_t* mxDoWork;
+
+} argsLaborer_t;
+
 void* porter_routine(void* voidArgs)
 {
     argsPorter_t* args = voidArgs;
@@ -43,13 +54,67 @@ void* porter_routine(void* voidArgs)
         int field = args->seed % args->noFields;
         pthread_mutex_lock(&(args->fields[field].mxNoSacks));
         args->fields[field].noSacks += 5;
-        // Debugging
-        printf("Current salt bags in field [%d]: %d\n", field, args->fields[field].noSacks);
         pthread_mutex_unlock(&(args->fields[field].mxNoSacks));
+
+        pthread_cond_signal(&(args->fields[field].condNoSacks));
 
         // Simulate work
         msleep(5 + field);
     }
+    return NULL;
+}
+
+void* laborer_routine(void* voidArgs)
+{
+    argsLaborer_t* args = voidArgs;
+
+    while (1)
+    {
+        pthread_mutex_lock(args->mxDoWork);
+        if (*(args->doWork) == 0)
+        {
+            pthread_mutex_unlock(args->mxDoWork);
+            break;
+        }
+        pthread_mutex_unlock(args->mxDoWork);
+
+        pthread_mutex_lock(&(args->field->mxNoSacks));
+
+        // Really important to use this function
+
+        // For conditional variables, check in a while loop
+        while (args->field->noSacks <= 0)
+        {
+            struct timespec t = get_cond_wait_time(100);
+            int ret = pthread_cond_timedwait(&(args->field->condNoSacks), &(args->field->mxNoSacks), &t);
+
+            pthread_mutex_lock(args->mxDoWork);
+            if (*(args->doWork) == 0)
+            {
+                pthread_mutex_unlock(args->mxDoWork);
+                break;
+            }
+            pthread_mutex_unlock(args->mxDoWork);
+
+            if (ret == ETIMEDOUT)
+            {
+                printf("SERVVS %d: EXSPECTO SALEM\n", args->ID);
+            }
+        }
+
+        // Salting the field
+        args->field->noSacks--;
+        pthread_mutex_unlock(&(args->field->mxNoSacks));
+        msleep(15);
+        args->field->noSalted++;
+        printf("SERVVS %d: ADIPISCOR SALEM %d ADHVC IVGERVM\n", args->ID, args->field->noSalted);
+        if (args->field->noSalted >= 50)
+        {
+            printf("SERVVS %d: LABOR MEVS CONFICIO\n", args->ID);
+            return NULL;
+        }
+    }
+
     return NULL;
 }
 
@@ -116,9 +181,25 @@ int main(int argc, char* argv[])
     if ((fields = calloc(N, sizeof(field_t))) == NULL)
         ERR("calloc");
 
+    argsLaborer_t* laborerArgs;
+    if ((laborerArgs = calloc(N, sizeof(argsLaborer_t))) == NULL)
+        ERR("calloc");
+
+    pthread_t* laborerID;
+    if ((laborerID = calloc(N, sizeof(argsPorter_t))) == NULL)
+        ERR("calloc");
+
     for (int i = 0; i < N; i++)
     {
         pthread_mutex_init(&fields[i].mxNoSacks, NULL);
+        pthread_cond_init(&fields[i].condNoSacks, NULL);
+
+        laborerArgs[i].field = &fields[i];
+        laborerArgs[i].ID = i;
+        laborerArgs[i].mxDoWork = &do_work_mutex;
+        laborerArgs[i].doWork = &do_work;
+
+        pthread_create(&laborerID[i], NULL, laborer_routine, &laborerArgs[i]);
     }
 
     // Creating porter threads
@@ -142,18 +223,31 @@ int main(int argc, char* argv[])
     }
 
     // Cleanup
-    for (int i = 0; i < Q; i++)
-    {
-        pthread_join(porterID[i], NULL);
-    }
     for (int i = 0; i < N; i++)
     {
         pthread_mutex_destroy(&fields[i].mxNoSacks);
+        pthread_cond_destroy(&fields[i].condNoSacks);
+        pthread_join(laborerID[i], NULL);
+    }
+
+    // If all fields have been salted
+    if (do_work == 1)
+    {
+        printf("SCIPIO: VENI, VIDI, VICI, CONSPERSI\n");
+        kill(0, SIGINT);
+    }
+
+    for (int i = 0; i < Q; i++)
+    {
+        pthread_join(porterID[i], NULL);
     }
 
     free(fields);
     free(porterID);
     free(porterArgs);
+
+    free(laborerID);
+    free(laborerArgs);
 
     pthread_join(sigID, NULL);
 }
