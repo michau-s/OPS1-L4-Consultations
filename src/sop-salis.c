@@ -24,6 +24,7 @@ typedef struct argsPorter_t
     int noFields;
     int* doWork;
     pthread_mutex_t* mxDoWork;
+    sem_t* semaphore;
 
 } argsPorter_t;
 
@@ -48,6 +49,12 @@ void* porter_routine(void* voidArgs)
             break;
         }
         pthread_mutex_unlock(args->mxDoWork);
+
+        if ((sem_wait(args->semaphore)))
+            ERR("sem_wait");
+        msleep(5);
+        if ((sem_post(args->semaphore)))
+            ERR("sem_post");
 
         // Ensure thread-safe randomness
         rand_r(&args->seed);
@@ -211,6 +218,9 @@ int main(int argc, char* argv[])
     if ((porterArgs = calloc(Q, sizeof(argsPorter_t))) == NULL)
         ERR("calloc");
 
+    sem_t semaphore;
+    sem_init(&semaphore, 0, 3);
+
     for (int i = 0; i < Q; i++)
     {
         porterArgs[i].doWork = &do_work;
@@ -218,6 +228,7 @@ int main(int argc, char* argv[])
         porterArgs[i].mxDoWork = &do_work_mutex;
         porterArgs[i].noFields = N;
         porterArgs[i].seed = rand();
+        porterArgs[i].semaphore = &semaphore;
 
         pthread_create(&porterID[i], NULL, porter_routine, &porterArgs[i]);
     }
@@ -248,6 +259,8 @@ int main(int argc, char* argv[])
 
     free(laborerID);
     free(laborerArgs);
+
+    sem_destroy(&semaphore);
 
     pthread_join(sigID, NULL);
 }
