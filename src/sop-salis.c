@@ -8,6 +8,51 @@ typedef struct argsSignalHandler_t
 
 } argsSignalHandler_t;
 
+typedef struct field_t
+{
+    int noSacks;
+    int noSalted;
+    pthread_mutex_t mxNoSacks;
+
+} field_t;
+
+typedef struct argsPorter_t
+{
+    unsigned int seed;
+    field_t* fields;
+    int noFields;
+    int* doWork;
+    pthread_mutex_t* mxDoWork;
+
+} argsPorter_t;
+void* porter_routine(void* voidArgs)
+{
+    argsPorter_t* args = voidArgs;
+    while (1)
+    {
+        pthread_mutex_lock(args->mxDoWork);
+        if (*(args->doWork) == 0)
+        {
+            pthread_mutex_unlock(args->mxDoWork);
+            break;
+        }
+        pthread_mutex_unlock(args->mxDoWork);
+
+        // Ensure thread-safe randomness
+        rand_r(&args->seed);
+        int field = args->seed % args->noFields;
+        pthread_mutex_lock(&(args->fields[field].mxNoSacks));
+        args->fields[field].noSacks += 5;
+        // Debugging
+        printf("Current salt bags in field [%d]: %d\n", field, args->fields[field].noSacks);
+        pthread_mutex_unlock(&(args->fields[field].mxNoSacks));
+
+        // Simulate work
+        msleep(5 + field);
+    }
+    return NULL;
+}
+
 void* signal_handling(void* voidArgs)
 {
     argsSignalHandler_t* args = voidArgs;
@@ -53,6 +98,7 @@ int main(int argc, char* argv[])
     if (Q <= 0 || Q > 10)
         usage(argc, argv);
 
+    // Signal handling
     pthread_t sigID;
     sigset_t mask;
     sigemptyset(&mask);
@@ -63,19 +109,51 @@ int main(int argc, char* argv[])
     sigArgs.doWork = &do_work;
     sigArgs.mask = &mask;
     sigArgs.mxDoWork = &do_work_mutex;
-
     pthread_create(&sigID, NULL, signal_handling, &sigArgs);
 
-    while (1)
+    // Creating the fields
+    field_t* fields;
+    if ((fields = calloc(N, sizeof(field_t))) == NULL)
+        ERR("calloc");
+
+    for (int i = 0; i < N; i++)
     {
-        pthread_mutex_lock(&do_work_mutex);
-        if (do_work == 0)
-        {
-            pthread_mutex_unlock(&do_work_mutex);
-            break;
-        }
-        pthread_mutex_unlock(&do_work_mutex);
+        pthread_mutex_init(&fields[i].mxNoSacks, NULL);
     }
+
+    // Creating porter threads
+    pthread_t* porterID;
+    if ((porterID = calloc(Q, sizeof(pthread_t))) == NULL)
+        ERR("calloc");
+
+    argsPorter_t* porterArgs;
+    if ((porterArgs = calloc(Q, sizeof(argsPorter_t))) == NULL)
+        ERR("calloc");
+
+    for (int i = 0; i < Q; i++)
+    {
+        porterArgs[i].doWork = &do_work;
+        porterArgs[i].fields = fields;
+        porterArgs[i].mxDoWork = &do_work_mutex;
+        porterArgs[i].noFields = N;
+        porterArgs[i].seed = rand();
+
+        pthread_create(&porterID[i], NULL, porter_routine, &porterArgs[i]);
+    }
+
+    // Cleanup
+    for (int i = 0; i < Q; i++)
+    {
+        pthread_join(porterID[i], NULL);
+    }
+    for (int i = 0; i < N; i++)
+    {
+        pthread_mutex_destroy(&fields[i].mxNoSacks);
+    }
+
+    free(fields);
+    free(porterID);
+    free(porterArgs);
 
     pthread_join(sigID, NULL);
 }
